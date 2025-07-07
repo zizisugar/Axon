@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: dbt_governance_neo4j
+    ports:
+      - "7474:7474" # Web UI
+      - "7687:7687" # Bolt Protocol (for drivers)
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+volumes:
+  neo4j_data:
