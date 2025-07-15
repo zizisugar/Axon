@@ -1,71 +1,133 @@
 import json
 from pathlib import Path
-from neo4j import GraphDatabase, Driver
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any
+from neo4j import Driver
 
-class LineageService:
+# ===================================================================
+# 步驟 1: 定義我們的「儲存介面」 (The "Contract")
+# ===================================================================
+class LineageStorageInterface(ABC):
     """
-    一個專門用來處理 dbt manifest 解析與載入至 Neo4j 的服務類別。
+    定義了所有血緣儲存服務都必須遵守的「合約」。
+    它規定了需要提供哪些方法，以及這些方法的輸入和輸出是什麼。
+    """
+    @abstractmethod
+    def update_graph_from_manifest(self, manifest_path: str) -> Dict[str, Any]:
+        """從 manifest.json 更新整個圖。"""
+        pass
+
+    @abstractmethod
+    def get_full_graph(self) -> Dict[str, Any]:
+        """獲取完整的圖數據以供前端視覺化。"""
+        pass
+
+    @abstractmethod
+    def find_downstream_dependencies(self, start_node_id: str) -> List[str]:
+        """根據指定的節點 ID 進行下游衝擊分析。"""
+        pass
+
+# ===================================================================
+# 步驟 2: 建立針對 Neo4j 的「具體實作」 (The "Implementation")
+# ===================================================================
+class Neo4jLineageService(LineageStorageInterface):
+    """
+    這是 StorageInterface 的具體實作，專門負責與 Neo4j 資料庫溝通。
+    它「簽署」了上面的合約，所以必須提供合約中定義的所有方法。
     """
     def __init__(self, driver: Driver):
-        """
-        初始化時接收一個已經建立好的 Neo4j Driver 實例。
-        這種作法稱為「依賴注入 (Dependency Injection)」，讓程式碼更具彈性與可測試性。
-        """
         self.driver = driver
 
-    def _clear_database(self, session):
-        """(私有方法) 清空資料庫，確保每次都是從乾淨的狀態開始。"""
-        print("正在清空 Neo4j 資料庫...")
-        session.run("MATCH (n) DETACH DELETE n")
-        print("資料庫已清空。")
-
-    def _load_nodes(self, session, nodes: dict):
-        """(私有方法) 將所有 dbt 節點載入到 Neo4j。"""
-        print("開始載入 dbt 節點至 Neo4j...")
-        for unique_id, node_info in nodes.items():
-            resource_type = node_info.get("resource_type", "unknown")
-            name = node_info.get("name", "unknown")
-            
-            session.run("""
-                MERGE (n:DbtNode {unique_id: $unique_id})
-                SET n.name = $name, n.resource_type = $resource_type
-            """, unique_id=unique_id, name=name, resource_type=resource_type)
-        print(f"成功載入 {len(nodes)} 個節點。")
-
-    def _load_relationships(self, session, nodes: dict):
-        """(私有方法) 根據 depends_on 建立節點之間的關係。"""
-        print("開始建立節點間的血緣關係...")
-        relationship_count = 0
-        for source_unique_id, node_info in nodes.items():
-            dependencies = node_info.get("depends_on", {}).get("nodes", [])
-            for target_unique_id in dependencies:
-                session.run("""
-                    MATCH (source:DbtNode {unique_id: $source_id})
-                    MATCH (target:DbtNode {unique_id: $target_id})
-                    MERGE (source)-[:DEPENDS_ON]->(target)
-                """, source_id=source_unique_id, target_id=target_unique_id)
-                relationship_count += 1
-        print(f"成功建立 {relationship_count} 條血緣關係。")
-
-    def update_graph_from_manifest(self, manifest_path: str) -> dict:
-        """
-        這是供外部 (API) 呼叫的主要方法。
-        它接收一個 manifest 檔案路徑，然後執行完整的更新流程。
-        """
+    def update_graph_from_manifest(self, manifest_path: str) -> Dict[str, Any]:
         path_obj = Path(manifest_path)
         if not path_obj.exists():
-            return {"status": "error", "message": f"Manifest file not found at {manifest_path}"}
+            raise FileNotFoundError(f"Manifest file not found at {manifest_path}")
 
         with open(path_obj) as f:
             manifest_data = json.load(f)
         
         nodes = manifest_data.get("nodes", {})
-        nodes_count = len(nodes)
         
         with self.driver.session() as session:
-            self._clear_database(session)
-            self._load_nodes(session, nodes)
-            self._load_relationships(session, nodes)
+            # 使用 transaction 來確保所有操作要麼全部成功，要麼全部失敗
+            session.execute_write(self._clear_and_load_data, nodes)
         
-        print("\n圖資料庫更新完成！")
-        return {"status": "success", "nodes_loaded": nodes_count}
+        nodes_loaded = len(nodes)
+        print(f"\n圖資料庫更新完成！共載入 {nodes_loaded} 個節點。")
+        return {"status": "success", "nodes_loaded": nodes_loaded}
+
+    def get_full_graph(self) -> Dict[str, Any]:
+        print("正在從 Neo4j 查詢完整的血緣圖...")
+        with self.driver.session() as session:
+            nodes = self._get_all_nodes(session)
+            edges = self._get_all_edges(session)
+        
+        print(f"查詢完成，找到 {len(nodes)} 個節點和 {len(edges)} 條關係。")
+        return {"nodes": nodes, "edges": edges}
+
+    def find_downstream_dependencies(self, start_node_id: str) -> List[str]:
+        print(f"正在分析 '{start_node_id}' 的下游衝擊...")
+        downstream_nodes = []
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (start_node:DbtNode {unique_id: $start_node_id})<-[:DEPENDS_ON*]-(downstream_node:DbtNode)
+                RETURN downstream_node.unique_id AS downstream_id
+            """, start_node_id=start_node_id)
+            downstream_nodes = [record["downstream_id"] for record in result]
+        
+        print(f"分析完成，找到 {len(downstream_nodes)} 個下游相依項目。")
+        return downstream_nodes
+
+    # --- 以下是內部使用的私有輔助方法 ---
+
+    @staticmethod
+    def _clear_and_load_data(tx, nodes: dict):
+        """一個 transaction function，整合了清空、載入節點和載入關係。"""
+        # 1. 清空資料庫
+        tx.run("MATCH (n) DETACH DELETE n")
+        
+        # 2. 載入所有節點
+        for unique_id, node_info in nodes.items():
+            resource_type = node_info.get("resource_type", "unknown")
+            name = node_info.get("name", "unknown")
+            tx.run("""
+                MERGE (n:DbtNode {unique_id: $unique_id})
+                SET n.name = $name, n.resource_type = $resource_type
+            """, unique_id=unique_id, name=name, resource_type=resource_type)
+            
+        # 3. 載入所有關係
+        for source_unique_id, node_info in nodes.items():
+            dependencies = node_info.get("depends_on", {}).get("nodes", [])
+            for target_unique_id in dependencies:
+                tx.run("""
+                    MATCH (source:DbtNode {unique_id: $source_id})
+                    MATCH (target:DbtNode {unique_id: $target_id})
+                    MERGE (source)-[:DEPENDS_ON]->(target)
+                """, source_id=source_unique_id, target_id=target_unique_id)
+
+    @staticmethod
+    def _get_all_nodes(session) -> List[Dict[str, Any]]:
+        nodes_data = []
+        result = session.run("MATCH (n:DbtNode) RETURN n")
+        for record in result:
+            node = record["n"]
+            nodes_data.append({
+                "id": node.get("unique_id"),
+                "data": {"label": node.get("name")},
+                "type": node.get("resource_type"),
+                "position": {"x": 0, "y": 0} # 給前端用的預設位置
+            })
+        return nodes_data
+
+    @staticmethod
+    def _get_all_edges(session) -> List[Dict[str, Any]]:
+        edges_data = []
+        result = session.run("MATCH (a:DbtNode)-[r:DEPENDS_ON]->(b:DbtNode) RETURN a.unique_id AS source, b.unique_id AS target")
+        for record in result:
+            edges_data.append({
+                "id": f'{record["source"]}-to-{record["target"]}',
+                "source": record["source"],
+                "target": record["target"],
+                "type": "default"
+            })
+        return edges_data
