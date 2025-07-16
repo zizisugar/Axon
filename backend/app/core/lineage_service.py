@@ -131,3 +131,56 @@ class Neo4jLineageService(LineageStorageInterface):
                 "type": "default"
             })
         return edges_data
+   
+# === insert data into neo4j ===
+# if __name__ == '__main__':
+#     from dotenv import load_dotenv
+#     import os
+#     from pathlib import Path
+#     from neo4j import GraphDatabase, Driver 
+
+#     # 步驟 1: 建立一個更可靠的路徑來找到 .env 檔案
+#     # 這會從目前檔案 (__file__) 的位置，一路往上找到專案的根目錄 (Axon)
+#     current_dir = Path(__file__).parent
+#     # 從 app/core/ -> app/ -> backend/ -> Axon/
+#     project_root = current_dir.parent.parent.parent
+#     dotenv_path = project_root / '.env'
+
+#     print(f"正在從以下路徑讀取 .env 檔案: {dotenv_path}")
+#     load_dotenv(dotenv_path=dotenv_path)
+
+#     # 步驟 2: 讀取環境變數並增加除錯用的 print 敘述
+#     NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://localhost:7687")
+#     NEO4J_USER = os.getenv("NEO4J_USER")
+#     NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+
+#     print(f"讀取到的 NEO4J_USER: {NEO4J_USER}")
+#     print(f"讀取到的 NEO4J_PASSWORD: {'******' if NEO4J_PASSWORD else None}") # 不直接印出密碼
+
+#     # 步驟 3: 增加明確的檢查
+#     if not NEO4J_USER or not NEO4J_PASSWORD:
+#         print("錯誤：無法從 .env 檔案讀取到 NEO4J_USER 或 NEO4J_PASSWORD。")
+#         print("請確認您的 .env 檔案位於專案根目錄 (Axon/)，且內容正確。")
+#     else:
+#         driver = None # 先初始化
+#         try:
+#             # 手動建立 driver
+#             driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+#             # 建立服務實例
+#             service = Neo4jLineageService(driver)
+
+#             # 指定 manifest.json 的路徑
+#             manifest_file_path = project_root / "tests" / "data" / "manifest.json"
+#             print(f"準備從以下路徑載入 manifest: {manifest_file_path}")
+
+#             service.update_graph_from_manifest(str(manifest_file_path))
+
+#             print("腳本執行完畢。")
+
+#         except Exception as e:
+#             print(f"執行過程中發生錯誤: {e}")
+#         finally:
+#             if driver:
+#                 driver.close()
+#                 print("Neo4j Driver 連線已關閉。")
