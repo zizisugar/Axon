@@ -1,0 +1,32 @@
+services:
+  # Neo4j 服務維持不變
+  neo4j:
+    image: neo4j:5
+    container_name: dbt_governance_neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+
+  # 新增我們的後端服務
+  backend:
+    # build 指令會告訴 Docker Compose 去找 Dockerfile 來建立映像檔
+    build:
+      context: ./backend # Dockerfile 所在的資料夾路徑
+    container_name: dbt_governance_backend
+    # 將我們本地的 .env 檔案傳遞給容器
+    env_file:
+      - .env
+    ports:
+      - "8000:8000" # 將容器的 8000 Port 映射到我們本機的 8000 Port
+    # depends_on 確保 neo4j 容器會比 backend 容器先啟動
+    depends_on:
+      - neo4j
+    volumes:
+      - ./backend/app:/app # 將本地程式碼掛載進容器，這樣修改程式碼時才能--reload
+
+volumes:
+  neo4j_data:
